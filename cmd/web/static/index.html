@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>go-mud</title>
+    <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+    <header>
+        <h1>go-mud</h1>
+        <div class="indicator" id="indicator"></div>
+        <span class="status-text" id="statusText">Disconnected</span>
+        <div class="spacer"></div>
+        <button id="muteBtn" onclick="toggleMute()">
+            <svg id="muteIcon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+                <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.08"></path>
+            </svg>
+        </button>
+        <button onclick="clearLog()">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4h12M5.3 4V2.7a1.3 1.3 0 011.4-1.4h2.6a1.3 1.3 0 011.4 1.4V4m2 0v9.3a1.3 1.3 0 01-1.4 1.4H4.7a1.3 1.3 0 01-1.4-1.4V4h9.4z"/></svg>
+            Clear
+        </button>
+    </header>
+
+    <div class="toolbar">
+        <input
+            type="text"
+            id="cmd"
+            placeholder="Enter command... (comma-separated for multiple)"
+            spellcheck="false"
+            autocomplete="off"
+        />
+        <button class="primary" onclick="sendCmd()">
+            <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M4 2 L14 8 L4 14 Z"/></svg>
+            Run
+        </button>
+    </div>
+
+    <div class="log-container" id="logContainer">
+        <div class="empty-state" id="emptyState">Waiting for connection...</div>
+    </div>
+
+    <script src="/static/js/helpers.js"></script>
+    <script src="/static/js/audio.js"></script>
+    <script src="/static/js/cards.js"></script>
+    <script src="/static/js/results.js"></script>
+    <script src="/static/js/ws.js"></script>
+</body>
+</html>
