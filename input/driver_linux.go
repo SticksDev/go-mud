@@ -10,8 +10,7 @@ import (
 )
 
 // LinuxDriver injects keystrokes via xdotool on X11.
-// Uses type --window for all input (including Return) since xdotool key
-// --window doesn't reliably deliver special keys to Electron apps via XSendEvent.
+// Text uses type --window (XSendEvent), special keys use key --window.
 type LinuxDriver struct {
 	windowTitle    string
 	keystrokeDelay time.Duration
@@ -54,11 +53,9 @@ func (d *LinuxDriver) SendReturn() error {
 	if err != nil {
 		return err
 	}
-	// Send Return via type (newline char) rather than key, which is more
-	// reliable for Electron apps receiving XSendEvent.
-	cmd := exec.Command("xdotool", "type", "--window", wid, "--clearmodifiers", "--", "\n")
+	cmd := exec.Command("xdotool", "key", "--window", wid, "--clearmodifiers", "Return")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("xdotool type Return: %w: %s", err, out)
+		return fmt.Errorf("xdotool key Return: %w: %s", err, out)
 	}
 	return nil
 }
@@ -76,17 +73,11 @@ func (d *LinuxDriver) SendEscape() error {
 }
 
 func (d *LinuxDriver) SendCommand(cmdText string) error {
-	wid, err := d.findWindow()
-	if err != nil {
+	if err := d.SendText(cmdText); err != nil {
 		return err
 	}
-	// Single xdotool call: text + newline to send Return in the same sequence.
-	delayMs := fmt.Sprintf("%d", d.keystrokeDelay.Milliseconds())
-	cmd := exec.Command("xdotool", "type", "--window", wid, "--clearmodifiers", "--delay", delayMs, "--", cmdText+"\n")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("xdotool type: %w: %s", err, out)
-	}
-	return nil
+	time.Sleep(10 * time.Millisecond)
+	return d.SendReturn()
 }
 
 func (d *LinuxDriver) ClearAndSendCommand(cmdText string) error {
