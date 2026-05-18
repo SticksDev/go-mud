@@ -57,3 +57,10 @@ type ProgressData struct {
 	Total   int    `json:"total"`
 	Command string `json:"command"`
 }
+
+type HelloData struct {
+	Version    string `json:"version"`
+	Platform   string `json:"platform"`
+	ActiveJob  bool   `json:"active_job"`
+	QueuedJobs int    `json:"queued_jobs"`
+}

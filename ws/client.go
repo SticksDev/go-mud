@@ -21,6 +21,7 @@ type Client struct {
 	url          string
 	executor     CommandExecutor
 	reconnectMax time.Duration
+	hello        HelloData
 
 	mu       sync.Mutex
 	conn     *websocket.Conn
@@ -29,11 +30,12 @@ type Client struct {
 	queue chan executeJob
 }
 
-func NewClient(url string, exec CommandExecutor, reconnectMax time.Duration) *Client {
+func NewClient(url string, exec CommandExecutor, reconnectMax time.Duration, hello HelloData) *Client {
 	return &Client{
 		url:          url,
 		executor:     exec,
 		reconnectMax: reconnectMax,
+		hello:        hello,
 		queue:        make(chan executeJob, 1024),
 	}
 }
@@ -86,6 +88,12 @@ func (c *Client) connectAndServe(ctx context.Context) error {
 	c.mu.Unlock()
 
 	slog.Info("connected", "url", c.url)
+	c.mu.Lock()
+	hello := c.hello
+	hello.ActiveJob = c.cancelFn != nil
+	hello.QueuedJobs = len(c.queue)
+	c.mu.Unlock()
+	c.send(ctx, OutboundMessage{Type: "hello", Data: hello})
 	c.send(ctx, OutboundMessage{Type: "status", Data: StatusData{State: "connected"}})
 
 	for {

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"runtime"
 
 	"gomud/audio"
 	"gomud/input"
@@ -44,7 +45,11 @@ func main() {
 		WithMinCommandDelay(cfg.MinCommandDelay),
 		WithSilenceSettleDelay(cfg.SilenceSettleDelay),
 	)
-	client := ws.NewClient(cfg.WebSocketURL, exec, cfg.ReconnectMax)
+	hello := ws.HelloData{
+		Version:  Version,
+		Platform: runtime.GOOS,
+	}
+	client := ws.NewClient(cfg.WebSocketURL, exec, cfg.ReconnectMax, hello)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
