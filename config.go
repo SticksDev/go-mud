@@ -11,6 +11,7 @@ type Config struct {
 	WebSocketURL       string
 	ShellPath          string
 	WindowTitle        string
+	LogLevel           string
 	IdleTimeout        time.Duration
 	KeystrokeDelay     time.Duration
 	PostFlushDelay     time.Duration
@@ -26,6 +27,7 @@ func parseConfig() Config {
 	flag.StringVar(&cfg.WebSocketURL, "ws-url", "", "WebSocket server URL to connect to (required)")
 	flag.StringVar(&cfg.ShellPath, "shell-path", shell.DefaultShellPath(), "Path to hackmud shell.txt")
 	flag.StringVar(&cfg.WindowTitle, "window-title", "hackmud", "Hackmud window title to find")
+	flag.StringVar(&cfg.LogLevel, "level", "info", "Log level (debug, info, warn, error)")
 	flag.DurationVar(&cfg.IdleTimeout, "idle-timeout", 15*time.Second, "Max time to wait for command output")
 	flag.DurationVar(&cfg.KeystrokeDelay, "keystroke-delay", 15*time.Millisecond, "Delay between individual keystrokes")
 	flag.DurationVar(&cfg.PostFlushDelay, "post-flush-delay", 200*time.Millisecond, "Delay after flush before reading shell.txt")

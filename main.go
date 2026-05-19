@@ -17,6 +17,10 @@ import (
 func main() {
 	cfg := parseConfig()
 
+	var level slog.Level
+	level.UnmarshalText([]byte(cfg.LogLevel))
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
+
 	if cfg.WebSocketURL == "" {
 		fmt.Fprintln(os.Stderr, "error: -ws-url is required")
 		os.Exit(1)
