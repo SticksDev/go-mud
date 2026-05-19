@@ -4,6 +4,7 @@ package audio
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"log/slog"
 	"math"
@@ -15,30 +16,36 @@ import (
 	"github.com/jfreymuth/pulse/proto"
 )
 
-// peakWriter receives uint8 peak-detect samples from PulseAudio and stores
-// the max as a float32 (0.0-1.0) in an atomic uint32.
-type peakWriter struct {
+// f32Writer receives F32LE PCM samples and stores the peak level (0.0-1.0).
+type f32Writer struct {
 	peak *atomic.Uint32
 }
 
-func (w *peakWriter) Write(p []byte) (int, error) {
-	var max byte
-	for _, b := range p {
-		if b > max {
-			max = b
+func (w *f32Writer) Write(p []byte) (int, error) {
+	var max float32
+	for i := 0; i+3 < len(p); i += 4 {
+		v := math.Float32frombits(binary.LittleEndian.Uint32(p[i : i+4]))
+		if v < 0 {
+			v = -v
+		}
+		if v > max {
+			max = v
 		}
 	}
-	storePeak(w.peak, float32(max)/255.0)
+	if max > 1.0 {
+		max = 1.0
+	}
+	storePeak(w.peak, max)
 	return len(p), nil
 }
 
-func (w *peakWriter) Format() byte { return proto.FormatUint8 }
+func (w *f32Writer) Format() byte { return proto.FormatFloat32LE }
 
 func storePeak(a *atomic.Uint32, v float32) { a.Store(math.Float32bits(v)) }
 func loadPeak(a *atomic.Uint32) float32     { return math.Float32frombits(a.Load()) }
 
-// pulseMonitor implements Monitor using PulseAudio's PA_STREAM_PEAK_DETECT
-// via the pipewire-pulse compatibility layer. Pure Go, no CGo.
+// pulseMonitor implements Monitor by recording F32 PCM from hackmud's audio
+// source via PulseAudio (pipewire-pulse) and computing peak levels.
 type pulseMonitor struct {
 	target           string
 	gracePeriod      time.Duration
@@ -68,7 +75,6 @@ func NewMonitor(windowTitle string, gracePeriod time.Duration) (Monitor, error) 
 	return m, nil
 }
 
-// run loops trying to establish a peak-detect stream, reconnecting on failure.
 func (m *pulseMonitor) run() {
 	defer close(m.done)
 
@@ -95,8 +101,8 @@ func (m *pulseMonitor) run() {
 	}
 }
 
-// monitor connects to PulseAudio, finds the target sink-input, and runs a
-// peak-detect recording stream until an error or quit.
+// monitor connects to PulseAudio, finds hackmud's source, and records F32
+// audio to compute peak levels until an error or quit.
 func (m *pulseMonitor) monitor() error {
 	client, err := pulse.NewClient(
 		pulse.ClientApplicationName("gomud-monitor"),
@@ -106,33 +112,24 @@ func (m *pulseMonitor) monitor() error {
 	}
 	defer client.Close()
 
-	sinkInputIdx, sinkIdx, err := m.findTarget(client)
+	sourceIdx, sourceName, err := m.findSource(client)
 	if err != nil {
 		return err
 	}
 
-	var sinkInfo proto.GetSinkInfoReply
-	err = client.RawRequest(&proto.GetSinkInfo{SinkIndex: sinkIdx, SinkName: ""}, &sinkInfo)
-	if err != nil {
-		return fmt.Errorf("get sink info: %w", err)
-	}
-
-	slog.Debug("setting up peak monitor",
-		"sink_input", sinkInputIdx,
-		"sink", sinkInfo.SinkName,
-		"monitor_source_index", sinkInfo.MonitorSourceIndex,
+	slog.Debug("setting up audio monitor",
+		"source_index", sourceIdx,
+		"source_name", sourceName,
 	)
 
-	writer := &peakWriter{peak: &m.peak}
+	writer := &f32Writer{peak: &m.peak}
 
 	stream, err := client.NewRecord(
 		writer,
 		pulse.RecordSampleRate(25),
 		pulse.RecordMono,
 		pulse.RecordRawOption(func(r *proto.CreateRecordStream) {
-			r.SourceIndex = sinkInfo.MonitorSourceIndex
-			r.PeakDetect = true
-			r.DirectOnInputIndex = sinkInputIdx
+			r.SourceIndex = sourceIdx
 			r.AdjustLatency = true
 		}),
 	)
@@ -143,7 +140,7 @@ func (m *pulseMonitor) monitor() error {
 
 	stream.Start()
 	m.active.Store(true)
-	slog.Info("pulse peak monitor active", "target", m.target)
+	slog.Info("audio monitor active", "source", sourceName)
 
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
@@ -163,31 +160,68 @@ func (m *pulseMonitor) monitor() error {
 	}
 }
 
-// findTarget locates the sink-input whose application.process.binary contains
-// the target string (case-insensitive).
-func (m *pulseMonitor) findTarget(client *pulse.Client) (sinkInputIdx, sinkIdx uint32, err error) {
-	var reply proto.GetSinkInputInfoListReply
-	err = client.RawRequest(&proto.GetSinkInputInfoList{}, &reply)
+// findSource looks for hackmud's audio source directly in the source list.
+// PipeWire exposes per-stream monitor sources with application properties.
+func (m *pulseMonitor) findSource(client *pulse.Client) (sourceIdx uint32, sourceName string, err error) {
+	var sources proto.GetSourceInfoListReply
+	err = client.RawRequest(&proto.GetSourceInfoList{}, &sources)
 	if err != nil {
-		return 0, 0, fmt.Errorf("list sink-inputs: %w", err)
+		return 0, "", fmt.Errorf("list sources: %w", err)
 	}
 
-	for _, si := range reply {
+	for _, src := range sources {
+		binary := ""
+		if prop, ok := src.Properties["application.process.binary"]; ok {
+			binary = prop.String()
+		}
+		if strings.Contains(strings.ToLower(binary), m.target) {
+			slog.Debug("found target source",
+				"index", src.SourceIndex,
+				"name", src.SourceName,
+				"binary", binary,
+			)
+			return src.SourceIndex, src.SourceName, nil
+		}
+	}
+
+	// Fallback: find via sink-input -> sink monitor source
+	return m.findSourceViaSinkInput(client)
+}
+
+// findSourceViaSinkInput falls back to the sink-input -> sink monitor approach
+// if hackmud isn't directly visible as a source.
+func (m *pulseMonitor) findSourceViaSinkInput(client *pulse.Client) (sourceIdx uint32, sourceName string, err error) {
+	var sinkInputs proto.GetSinkInputInfoListReply
+	err = client.RawRequest(&proto.GetSinkInputInfoList{}, &sinkInputs)
+	if err != nil {
+		return 0, "", fmt.Errorf("list sink-inputs: %w", err)
+	}
+
+	for _, si := range sinkInputs {
 		binary := ""
 		if prop, ok := si.Properties["application.process.binary"]; ok {
 			binary = prop.String()
 		}
-		if strings.Contains(strings.ToLower(binary), m.target) {
-			slog.Debug("found target sink-input",
-				"index", si.SinkInputIndex,
-				"binary", binary,
-				"sink_index", si.SinkIndex,
-			)
-			return si.SinkInputIndex, si.SinkIndex, nil
+		if !strings.Contains(strings.ToLower(binary), m.target) {
+			continue
 		}
+
+		slog.Debug("found target via sink-input",
+			"sink_input", si.SinkInputIndex,
+			"binary", binary,
+			"sink_index", si.SinkIndex,
+		)
+
+		var sinkInfo proto.GetSinkInfoReply
+		err = client.RawRequest(&proto.GetSinkInfo{SinkIndex: si.SinkIndex, SinkName: ""}, &sinkInfo)
+		if err != nil {
+			return 0, "", fmt.Errorf("get sink info: %w", err)
+		}
+
+		return sinkInfo.MonitorSourceIndex, sinkInfo.MonitorSourceName, nil
 	}
 
-	return 0, 0, fmt.Errorf("no sink-input found for %q", m.target)
+	return 0, "", fmt.Errorf("no source or sink-input found for %q", m.target)
 }
 
 func (m *pulseMonitor) PeakLevel() (float32, error) {
