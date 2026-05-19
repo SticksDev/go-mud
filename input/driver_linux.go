@@ -4,6 +4,7 @@ package input
 
 import (
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"strings"
 	"time"
@@ -32,6 +33,7 @@ func (d *LinuxDriver) findWindow() (string, error) {
 	if wid == "" {
 		return "", fmt.Errorf("window %q not found", d.windowTitle)
 	}
+	slog.Debug("found window", "title", d.windowTitle, "wid", wid)
 	return wid, nil
 }
 
@@ -41,6 +43,7 @@ func (d *LinuxDriver) SendText(text string) error {
 		return err
 	}
 	delayMs := fmt.Sprintf("%d", d.keystrokeDelay.Milliseconds())
+	slog.Debug("sending text", "len", len(text), "wid", wid)
 	cmd := exec.Command("xdotool", "type", "--window", wid, "--clearmodifiers", "--delay", delayMs, "--", text)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("xdotool type: %w: %s", err, out)
@@ -53,6 +56,7 @@ func (d *LinuxDriver) SendReturn() error {
 	if err != nil {
 		return err
 	}
+	slog.Debug("sending Return", "wid", wid)
 	cmd := exec.Command("xdotool", "key", "--window", wid, "--clearmodifiers", "Return")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("xdotool key Return: %w: %s", err, out)
@@ -65,6 +69,7 @@ func (d *LinuxDriver) SendEscape() error {
 	if err != nil {
 		return err
 	}
+	slog.Debug("sending Escape", "wid", wid)
 	cmd := exec.Command("xdotool", "key", "--window", wid, "--clearmodifiers", "Escape")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("xdotool key Escape: %w: %s", err, out)

@@ -103,8 +103,11 @@ func (c *Client) connectAndServe(ctx context.Context) error {
 			return fmt.Errorf("read: %w", err)
 		}
 
+		slog.Debug("received message", "type", msg.Type, "id", msg.ID)
+
 		switch msg.Type {
 		case "execute":
+			slog.Info("execute request received", "id", msg.ID, "queued", len(c.queue))
 			c.send(ctx, OutboundMessage{
 				Type: "status",
 				ID:   msg.ID,
@@ -114,6 +117,7 @@ func (c *Client) connectAndServe(ctx context.Context) error {
 		case "ping":
 			c.send(ctx, OutboundMessage{Type: "pong", ID: msg.ID})
 		case "cancel":
+			slog.Info("cancel request received", "id", msg.ID)
 			c.mu.Lock()
 			if c.cancelFn != nil {
 				c.cancelFn()
@@ -126,6 +130,7 @@ func (c *Client) connectAndServe(ctx context.Context) error {
 }
 
 func (c *Client) handleExecute(ctx context.Context, msg InboundMessage) {
+	slog.Debug("handling execute job", "id", msg.ID)
 	var req ExecuteRequest
 	if err := json.Unmarshal(msg.Data, &req); err != nil {
 		c.send(ctx, OutboundMessage{
@@ -207,5 +212,7 @@ func (c *Client) send(ctx context.Context, msg OutboundMessage) {
 
 	if err := wsjson.Write(ctx, conn, msg); err != nil {
 		slog.Warn("send failed", "type", msg.Type, "error", err)
+	} else {
+		slog.Debug("sent message", "type", msg.Type, "id", msg.ID)
 	}
 }

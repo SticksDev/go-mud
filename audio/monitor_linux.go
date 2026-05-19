@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os/exec"
 	"strings"
 	"time"
@@ -31,57 +32,37 @@ func NewMonitor(windowTitle string, gracePeriod time.Duration) (Monitor, error) 
 		return nil, fmt.Errorf("pactl not found: %w", err)
 	}
 	return &pactlMonitor{
-		windowTitle:       windowTitle,
+		windowTitle:       strings.ToLower(windowTitle),
 		pollInterval:      100 * time.Millisecond,
 		gracePeriod:       gracePeriod,
 		consecutiveNeeded: 3,
 	}, nil
 }
 
-func (m *pactlMonitor) findTargetPID() (string, error) {
-	out, err := exec.Command("xdotool", "search", "--name", m.windowTitle).Output()
-	if err != nil {
-		return "", fmt.Errorf("xdotool search: %w", err)
-	}
-	wid := strings.TrimSpace(strings.Split(string(out), "\n")[0])
-	if wid == "" {
-		return "", fmt.Errorf("window %q not found", m.windowTitle)
-	}
-
-	pidOut, err := exec.Command("xdotool", "getwindowpid", wid).Output()
-	if err != nil {
-		return "", fmt.Errorf("xdotool getwindowpid: %w", err)
-	}
-	return strings.TrimSpace(string(pidOut)), nil
-}
-
-// getSinkInputState finds the sink-input for the given PID and returns its state.
-// Returns ("", false, nil) if no sink-input is found for the PID.
-func (m *pactlMonitor) getSinkInputState(pid string) (string, bool, error) {
+// findSinkInput finds the sink-input whose binary name contains the window title.
+// this is useful because the same process may create multiple sink-inputs (e.g. music and voice audio), and we want to monitor all of them together.
+func (m *pactlMonitor) findSinkInput() (*sinkInput, error) {
 	out, err := exec.Command("pactl", "--format=json", "list", "sink-inputs").Output()
 	if err != nil {
-		return "", false, fmt.Errorf("pactl list sink-inputs: %w", err)
+		return nil, fmt.Errorf("pactl list sink-inputs: %w", err)
 	}
 
 	var inputs []sinkInput
 	if err := json.Unmarshal(out, &inputs); err != nil {
-		return "", false, fmt.Errorf("parse pactl output: %w", err)
+		return nil, fmt.Errorf("parse pactl output: %w", err)
 	}
 
-	for _, si := range inputs {
-		if si.Properties["application.process.id"] == pid {
-			return si.State, true, nil
+	for i := range inputs {
+		si := &inputs[i]
+		binary := strings.ToLower(si.Properties["application.process.binary"])
+		if strings.Contains(binary, m.windowTitle) {
+			return si, nil
 		}
 	}
-	return "", false, nil
+	return nil, nil
 }
 
 func (m *pactlMonitor) WaitForSilence(ctx context.Context) error {
-	pid, err := m.findTargetPID()
-	if err != nil {
-		return err
-	}
-
 	graceDeadline := time.Now().Add(m.gracePeriod)
 	ticker := time.NewTicker(m.pollInterval)
 	defer ticker.Stop()
@@ -94,35 +75,47 @@ func (m *pactlMonitor) WaitForSilence(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			state, found, err := m.getSinkInputState(pid)
+			si, err := m.findSinkInput()
 			if err != nil {
+				slog.Debug("audio poll error", "error", err)
 				continue
 			}
 
 			graceExpired := time.Now().After(graceDeadline)
 
-			if !found {
+			if si == nil {
 				if audioSeen {
-					return nil // session disappeared after audio was seen
+					slog.Debug("audio session disappeared after audio was seen")
+					return nil
 				}
 				if graceExpired {
+					slog.Debug("no audio session found within grace period")
 					return ErrNoAudioSession
 				}
 				continue
 			}
 
-			isActive := state == "RUNNING"
+			isActive := si.State == "RUNNING"
 
 			if isActive {
+				if !audioSeen {
+					slog.Debug("audio started",
+						"binary", si.Properties["application.process.binary"],
+						"pid", si.Properties["application.process.id"],
+					)
+				}
 				audioSeen = true
 				silentCount = 0
 			} else if audioSeen {
 				silentCount++
+				slog.Debug("audio silent tick", "count", silentCount, "needed", m.consecutiveNeeded, "state", si.State)
 				if silentCount >= m.consecutiveNeeded {
+					slog.Debug("silence confirmed")
 					return nil
 				}
 			} else {
 				if graceExpired {
+					slog.Debug("audio session found but never active, grace expired", "state", si.State)
 					return ErrNoAudioSession
 				}
 			}
@@ -131,21 +124,15 @@ func (m *pactlMonitor) WaitForSilence(ctx context.Context) error {
 }
 
 func (m *pactlMonitor) PeakLevel() (float32, error) {
-	pid, err := m.findTargetPID()
+	si, err := m.findSinkInput()
 	if err != nil {
 		return -1, err
 	}
-
-	state, found, err := m.getSinkInputState(pid)
-	if err != nil {
-		return -1, err
-	}
-	if !found {
+	if si == nil {
 		return -1, nil
 	}
 
-	// pactl doesn't expose real-time peak levels; approximate from state
-	if state == "RUNNING" {
+	if si.State == "RUNNING" {
 		return 1.0, nil
 	}
 	return 0.0, nil

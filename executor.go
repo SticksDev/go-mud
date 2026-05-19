@@ -54,6 +54,7 @@ func New(drv input.Driver, rdr *shell.Reader, mon audio.Monitor, opts ...Option)
 
 // flush sends the flush command and waits for the file to be written.
 func (e *Executor) flush() error {
+	slog.Debug("flushing", "post_delay", e.postFlushDelay)
 	if err := e.input.ClearAndSendCommand("flush"); err != nil {
 		return err
 	}
@@ -64,33 +65,41 @@ func (e *Executor) flush() error {
 // Execute runs a single hackmud command and returns the result.
 func (e *Executor) Execute(ctx context.Context, cmd string) ws.Result {
 	start := time.Now()
+	slog.Info("executing command", "command", cmd)
 
 	// Clear the terminal so only this command's output will be on screen
+	slog.Debug("sending clear")
 	if err := e.input.ClearAndSendCommand("clear"); err != nil {
+		slog.Error("clear failed", "command", cmd, "error", err)
 		return ws.Result{Command: cmd, Error: "clear: " + err.Error(), DurationMs: ms(start)}
 	}
 	time.Sleep(100 * time.Millisecond)
 
 	// Send the command (with Escape guard)
+	slog.Debug("sending command to game", "command", cmd)
 	if err := e.input.ClearAndSendCommand(cmd); err != nil {
+		slog.Error("send command failed", "command", cmd, "error", err)
 		return ws.Result{Command: cmd, Error: "send command: " + err.Error(), DurationMs: ms(start)}
 	}
 
 	// Wait for audio silence
+	slog.Debug("waiting for audio silence", "timeout", e.idleTimeout)
 	audioCtx, cancel := context.WithTimeout(ctx, e.idleTimeout)
 	defer cancel()
 
 	err := e.audioMonitor.WaitForSilence(audioCtx)
 
 	if errors.Is(err, audio.ErrNoAudioSession) {
-		slog.Debug("no audio session, using timed wait", "command", cmd)
+		slog.Debug("no audio session, using timed wait", "command", cmd, "delay", e.minCommandDelay)
 		time.Sleep(e.minCommandDelay)
 	} else if err != nil {
-		slog.Warn("audio wait failed", "command", cmd, "error", err)
+		slog.Warn("audio wait failed, flushing anyway", "command", cmd, "error", err)
 		output, readErr := e.captureOutput(cmd)
 		if readErr != nil {
+			slog.Error("read after audio timeout failed", "command", cmd, "error", readErr)
 			return ws.Result{Command: cmd, Error: "audio timeout + read error: " + readErr.Error(), TimedOut: true, DurationMs: ms(start)}
 		}
+		slog.Info("command completed (timed out)", "command", cmd, "duration_ms", ms(start), "output_len", len(output.Clean))
 		return ws.Result{
 			Command:    cmd,
 			Output:     output.Clean,
@@ -103,13 +112,16 @@ func (e *Executor) Execute(ctx context.Context, cmd string) ws.Result {
 	}
 
 	// Silence detected (or no audio). Small settle delay then flush once.
+	slog.Debug("settle delay before flush", "delay", e.silenceSettleDelay)
 	time.Sleep(e.silenceSettleDelay)
 
 	output, err := e.captureOutput(cmd)
 	if err != nil {
+		slog.Error("capture output failed", "command", cmd, "error", err)
 		return ws.Result{Command: cmd, Error: "read after silence: " + err.Error(), DurationMs: ms(start)}
 	}
 
+	slog.Info("command completed", "command", cmd, "duration_ms", ms(start), "output_len", len(output.Clean))
 	return ws.Result{
 		Command:    cmd,
 		Output:     output.Clean,
@@ -120,6 +132,7 @@ func (e *Executor) Execute(ctx context.Context, cmd string) ws.Result {
 
 // captureOutput truncates shell.txt, flushes, reads the result, and strips noise.
 func (e *Executor) captureOutput(cmd string) (shell.Output, error) {
+	slog.Debug("capturing output", "command", cmd)
 	e.shell.Truncate()
 	if err := e.flush(); err != nil {
 		return shell.Output{}, err
@@ -128,6 +141,7 @@ func (e *Executor) captureOutput(cmd string) (shell.Output, error) {
 	if err != nil {
 		return shell.Output{}, err
 	}
+	slog.Debug("raw output read", "command", cmd, "bytes", len(out.Raw))
 	out.Clean = stripNoise(out.Clean, cmd)
 	out.Raw = stripNoiseRaw(out.Raw, cmd)
 	return out, nil
@@ -135,13 +149,16 @@ func (e *Executor) captureOutput(cmd string) (shell.Output, error) {
 
 // ExecuteSequence runs commands in order, calling onResult after each.
 func (e *Executor) ExecuteSequence(ctx context.Context, cmds []string, onResult func(idx int, r ws.Result)) error {
+	slog.Info("starting sequence", "total", len(cmds))
 	for i, cmd := range cmds {
 		if ctx.Err() != nil {
+			slog.Warn("sequence cancelled", "completed", i, "total", len(cmds))
 			return ctx.Err()
 		}
 		result := e.Execute(ctx, cmd)
 		onResult(i, result)
 	}
+	slog.Info("sequence complete", "total", len(cmds))
 	return nil
 }
 

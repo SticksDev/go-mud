@@ -2,6 +2,7 @@ package shell
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -40,6 +41,7 @@ func DefaultShellPath() string {
 
 // Truncate empties shell.txt so the next flush only contains fresh output.
 func (r *Reader) Truncate() {
+	slog.Debug("truncating shell.txt")
 	os.Truncate(r.shellPath, 0)
 }
 
@@ -51,6 +53,7 @@ func (r *Reader) Read() (Output, error) {
 		data, err := os.ReadFile(r.shellPath)
 		if err == nil {
 			raw := string(data)
+			slog.Debug("shell.txt read", "bytes", len(data), "attempt", i+1)
 			return Output{
 				Raw:    raw,
 				Clean:  StripColors(raw),
@@ -58,6 +61,7 @@ func (r *Reader) Read() (Output, error) {
 			}, nil
 		}
 		lastErr = err
+		slog.Debug("shell.txt read failed, retrying", "attempt", i+1, "error", err)
 		if i < 4 {
 			time.Sleep(50 * time.Millisecond)
 		}
