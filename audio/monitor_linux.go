@@ -124,17 +124,33 @@ func (m *pulseMonitor) monitor() error {
 
 	writer := &f32Writer{peak: &m.peak}
 
-	stream, err := client.NewRecord(
-		writer,
-		pulse.RecordSampleRate(25),
-		pulse.RecordMono,
-		pulse.RecordRawOption(func(r *proto.CreateRecordStream) {
-			r.SourceIndex = sourceIdx
-			r.AdjustLatency = true
-		}),
-	)
-	if err != nil {
-		return fmt.Errorf("create record stream: %w", err)
+	type recordResult struct {
+		stream *pulse.RecordStream
+		err    error
+	}
+	ch := make(chan recordResult, 1)
+	go func() {
+		s, e := client.NewRecord(
+			writer,
+			pulse.RecordSampleRate(8000),
+			pulse.RecordMono,
+			pulse.RecordRawOption(func(r *proto.CreateRecordStream) {
+				r.SourceIndex = sourceIdx
+				r.AdjustLatency = true
+			}),
+		)
+		ch <- recordResult{s, e}
+	}()
+
+	var stream *pulse.RecordStream
+	select {
+	case res := <-ch:
+		if res.err != nil {
+			return fmt.Errorf("create record stream: %w", res.err)
+		}
+		stream = res.stream
+	case <-time.After(5 * time.Second):
+		return fmt.Errorf("timeout creating record stream on source %q", sourceName)
 	}
 	defer stream.Close()
 
